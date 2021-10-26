@@ -102,20 +102,14 @@ def main(
         print(f"{input_tokenized}")
         print("----------")
     n_token = len(input_tokenized)
-    not_yet_masked = (
-        ["[CLS]"]+input_tokenized+["[SEP]"]
-        +input_tokenized+["[SEP]"]
-    )
-    print(not_yet_masked)
-    
+
     input_encoded = sbert_model.encode([input_sentence],as_numpy=True)[0]
-    print(input_encoded.shape)
     input_norm = np.sqrt(np.sum(input_encoded*input_encoded))
-    print(input_norm)
     
     rng = np.random.default_rng(seed=seed) 
     
     generated_list = []
+    cos_list = []
     segment_ids = [0]*(2+n_token)+[1]*(1+n_token)
     segments_tensor = torch.tensor([segment_ids]).to(device)
     for i_try in range(n_max_try):
@@ -132,15 +126,16 @@ def main(
         )
         if verbose:
             print(f" mask_indices = {mask_indices}")
-        generated = [token for token in not_yet_masked]
-        print(generated)
-        for mask_index in mask_indices:
+        modified = [token for token in input_tokenized]
+        for mask_index in mask_indices:           
             masked_token = input_tokenized[mask_index]
             i_masked = n_token+2+mask_index
-            generated[i_masked] = "[MASK]"
-            token_ids = tokenizer.convert_tokens_to_ids(generated)
+            double_modified = [token for token in (["[CLS]"]
+                                                   +modified+["[SEP]"]
+                                                   +modified+["[SEP]"])]
+            double_modified[i_masked] = "[MASK]"
+            token_ids = tokenizer.convert_tokens_to_ids(double_modified)
             tokens_tensor = torch.tensor([token_ids]).to(device)
-            print(generated)
             with torch.no_grad():
                 prediction = masked_lang_model(
                     tokens_tensor,
@@ -155,25 +150,32 @@ def main(
                 i_cand = rng.choice(topk_index)
                 cand_token = tokenizer.convert_ids_to_tokens([i_cand])[0]
                 if cand_token!=masked_token:
-                    generated[i_masked] = cand_token
+                    modified[i_masked-2-n_token] = cand_token
                     break
-            print(generated)
+            if verbose:
+                print(modified)
 
-        print(["".join(generated)])
-        generated_encoded = sbert_model.encode(
-            ["".join(generated)],
+        detokenized = tokenizer.convert_tokens_to_string(
+            modified
+        ).replace(" ", "")
+        modified_encoded = sbert_model.encode(
+            [detokenized],
             as_numpy=True,
         )[0]
-        generated_norm = np.sqrt(np.sum(generated_encoded*generated_encoded))
-        cos = np.sum(generated_encoded*input_encoded)/generated_norm/input_norm
-        print(generated_norm, cos, cos_thre)
+        modified_norm = np.sqrt(np.sum(modified_encoded*modified_encoded))
+        cos = np.sum(modified_encoded*input_encoded)/modified_norm/input_norm
+        if verbose:
+            print(f"{i_try} : {detokenized} (cos={cos})")
         if cos>cos_thre:
-            generated_list.append(generated)
+            generated_list.append(detokenized)
+            cos_list.append(cos)
             if len(generated_list)>=n_generate:
-                if verbose:
-                    print(f"{i_try} : {generated}")
                 break
 
+    if verbose:
+        print()
+        for cos, sentence in zip(cos_list, generated_list):
+            print(cos, sentence)
     return generated_list
             
 if __name__ == "__main__":
